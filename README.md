@@ -2,6 +2,8 @@
 
 benchmark LLM coding performance across programming languages.
 
+**Results may be found in [the Releases tab](https://github.com/vivshaw/llmlangbench/releases)**
+
 ## languages
 
 | language   | why it's interesting                                                                               |
@@ -26,16 +28,16 @@ run `./scripts/check-prereqs.sh` to verify your system is ready.
 - `ANTHROPIC_API_KEY` environment variable set
 
 **languages:**
-| language | requires |
-|---|---|
-| TypeScript | node, npm |
-| JavaScript | node, npm |
-| Python | python3, venv module (`apt install python3-venv` on Debian/Ubuntu) |
-| Ruby | ruby, bundler |
-| Rust | cargo |
-| Go | go |
-| Haskell | stack |
-| Java | JDK (java, javac) |
+| language   | requires                                                           |
+| ---------- | ------------------------------------------------------------------ |
+| TypeScript | node, npm                                                          |
+| JavaScript | node, npm                                                          |
+| Python     | python3, venv module (`apt install python3-venv` on Debian/Ubuntu) |
+| Ruby       | ruby, bundler                                                      |
+| Rust       | cargo                                                              |
+| Go         | go                                                                 |
+| Haskell    | stack                                                              |
+| Java       | JDK (java, javac)                                                  |
 
 ## running benchmarks
 
