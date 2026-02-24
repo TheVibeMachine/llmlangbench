@@ -2,7 +2,7 @@
 
 benchmark LLM coding performance across programming languages.
 
-**Results may be found in [the Releases tab](https://github.com/vivshaw/llmlangbench/releases)**
+**Results may be found in [the Releases tab](https://github.com/vivshaw/llmlangbench/releases).**
 
 ## languages
 
