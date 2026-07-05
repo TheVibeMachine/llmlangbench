@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { DEFAULT_ANTHROPIC_REVIEW_MODEL, generateText, type ReviewProvider } from "./llm.js";
 
 export interface ReviewResult {
   score: number;
@@ -97,11 +97,10 @@ export async function reviewTrialDir(
   dir: string,
   specPath: string,
   rubricPath: string,
-  model = "claude-sonnet-4-5-20250929",
   scaffoldDir: string,
+  model = DEFAULT_ANTHROPIC_REVIEW_MODEL,
+  provider: ReviewProvider = "anthropic",
 ): Promise<ReviewResult> {
-  const client = new Anthropic();
-
   const spec = fs.readFileSync(specPath, "utf-8");
   const rubric = fs.readFileSync(rubricPath, "utf-8");
 
@@ -147,16 +146,11 @@ Respond with a JSON object containing:
 
 Respond ONLY with the JSON object, no other text.`;
 
-  const response = await client.messages.create({
+  const raw = await generateText(prompt, {
+    provider,
     model,
-    max_tokens: 2048,
-    temperature: 0,
-    messages: [{ role: "user", content: prompt }],
+    maxTokens: 2048,
   });
-
-  // extract text from response
-  const textBlock = response.content.find((b) => b.type === "text");
-  const raw = textBlock?.text ?? "";
 
   // parse JSON, handling optional markdown code fences and malformed responses
   const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];

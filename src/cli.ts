@@ -5,6 +5,7 @@ import { glob } from "node:fs/promises";
 import { runTrial } from "./runner.js";
 import { scoreTrialDir } from "./scorer.js";
 import { buildReport } from "./reporter.js";
+import { defaultReviewModel, parseReviewProvider, type ReviewProvider } from "./llm.js";
 import type {
   BenchmarkRun,
   LanguageConfig,
@@ -24,6 +25,18 @@ function interpolate(template: string, taskId: string): string {
 function loadLanguages(): Record<string, Omit<LanguageConfig, "id">> {
   const raw = fs.readFileSync(LANGUAGES_PATH, "utf-8");
   return JSON.parse(raw);
+}
+
+function inferReviewProvider(
+  explicitProvider: string | undefined,
+  harness: RunConfig["harness"],
+): ReviewProvider {
+  const parsed = parseReviewProvider(explicitProvider);
+  return parsed ?? (harness === "codex" ? "openai" : "anthropic");
+}
+
+function formatCost(costUsd: number, estimated: boolean): string {
+  return estimated ? `$${costUsd.toFixed(4)}` : "n/a";
 }
 
 async function discoverTasks(): Promise<TaskConfig[]> {
@@ -86,10 +99,22 @@ program
 program
   .command("run")
   .description("run benchmarks against discovered tasks")
-  .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-5-20250929")
+  .option("--harness <id>", "agent harness to run trials with (claude-code, codex)", "claude-code")
+  .option("-m, --model <model>", "model to use (defaults vary by harness)")
   .option("-t, --trials <n>", "number of trials per combo", "3")
-  .option("--max-turns <n>", "max turns per trial", "60")
-  .option("--max-budget <usd>", "max budget per trial in USD", "5")
+  .option("--max-turns <n>", "max turns per trial (claude-code only)", "60")
+  .option("--max-actions <n>", "max actions per trial (codex only; 0 disables)", "60")
+  .option("--max-budget <usd>", "max budget per trial in USD (claude-code only)", "5")
+  .option(
+    "--timeout <seconds>",
+    "per-trial timeout in seconds: wall-clock ceiling from trial start for codex, " +
+      "inactivity/stall ceiling (reset on each new message) for claude-code",
+    "600",
+  )
+  .option(
+    "--codex-model-provider <id>",
+    "Codex-only model_provider override passed as -c model_provider=<id>",
+  )
   .option(
     "--task <id>",
     "run only a specific task (by ID)",
@@ -100,14 +125,28 @@ program
   )
   .option(
     "--review-model <model>",
-    "Claude model for AI code review and analysis",
-    "claude-sonnet-4-5-20250929",
+    "model for AI code review and analysis (defaults vary by --review-provider)",
+  )
+  .option(
+    "--review-provider <provider>",
+    "provider for AI code review and analysis (anthropic, openai; defaults to openai for codex and anthropic otherwise)",
   )
   .action(async (opts) => {
+    const harness: RunConfig["harness"] = opts.harness;
+    const model = opts.model ?? (harness === "codex" ? "gpt-5.4" : "claude-sonnet-4-5-20250929");
+    const reviewProvider = inferReviewProvider(opts.reviewProvider, harness);
+    const reviewModel = opts.reviewModel ?? defaultReviewModel(reviewProvider);
+
     const runConfig: RunConfig = {
-      model: opts.model,
+      harness,
+      model,
+      codexModelProvider: opts.codexModelProvider,
+      reviewProvider,
+      reviewModel,
       maxTurns: parseInt(opts.maxTurns),
+      maxActions: parseInt(opts.maxActions),
       maxBudgetUsd: parseFloat(opts.maxBudget),
+      timeoutMs: parseInt(opts.timeout) * 1000,
       trials: parseInt(opts.trials),
       allowedTools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
     };
@@ -139,7 +178,13 @@ program
     }
 
     console.log(`starting benchmark run: ${runId}`);
+    console.log(`harness: ${runConfig.harness}`);
     console.log(`model: ${runConfig.model}`);
+    console.log(`review provider: ${reviewProvider}`);
+    console.log(`review model: ${reviewModel}`);
+    if (runConfig.harness === "codex") {
+      console.log(`max actions: ${runConfig.maxActions === 0 ? "disabled" : runConfig.maxActions}`);
+    }
     console.log(`tasks: ${tasks.map((t) => t.id).join(", ")}`);
     console.log(`trials per combo: ${runConfig.trials}\n`);
 
@@ -167,7 +212,8 @@ program
             runConfig,
             trial,
             task.rubricPath,
-            opts.reviewModel,
+            reviewModel,
+            reviewProvider,
           );
 
           benchmarkRun.results.push(result);
@@ -175,8 +221,11 @@ program
           const reviewInfo = result.reviewScore != null
             ? ` | review: ${result.reviewScore}/100`
             : " | review: n/a";
+          const effortInfo = runConfig.harness === "codex"
+            ? `${result.actions} actions`
+            : `${result.turns} turns`;
           console.log(
-            `  -> ${result.testsPassed}/${result.testsTotal} tests passed | $${result.costUsd.toFixed(4)} | ${result.turns} turns | ${(result.durationMs / 1000).toFixed(1)}s${reviewInfo}`,
+            `  -> ${result.testsPassed}/${result.testsTotal} tests passed | ${formatCost(result.costUsd, result.costEstimated)} | ${effortInfo} | ${(result.durationMs / 1000).toFixed(1)}s${reviewInfo}`,
           );
         }
       }
@@ -188,7 +237,7 @@ program
     console.log(`\nresults written to: ${outPath}`);
 
     // build report, write to file, and print
-    const report = await buildReport(benchmarkRun, opts.reviewModel);
+    const report = await buildReport(benchmarkRun, reviewModel, reviewProvider);
     const reportPath = path.join(runDir, "report.md");
     fs.writeFileSync(reportPath, report);
     console.log(`report written to: ${reportPath}`);
@@ -201,10 +250,13 @@ program
   .argument("<dir>", "path to run directory (contains run.json)")
   .option(
     "--review-model <model>",
-    "Claude model for AI language analysis",
-    "claude-sonnet-4-5-20250929",
+    "model for AI language analysis (defaults vary by --review-provider)",
   )
-  .action(async (dir: string, opts: { reviewModel: string }) => {
+  .option(
+    "--review-provider <provider>",
+    "provider for AI language analysis (anthropic, openai; defaults to the run config, then harness default)",
+  )
+  .action(async (dir: string, opts: { reviewModel?: string; reviewProvider?: string }) => {
     const runJsonPath = path.resolve(dir, "run.json");
     if (!fs.existsSync(runJsonPath)) {
       console.error(`run.json not found in: ${path.resolve(dir)}`);
@@ -213,7 +265,13 @@ program
 
     const raw = fs.readFileSync(runJsonPath, "utf-8");
     const run: BenchmarkRun = JSON.parse(raw);
-    const report = await buildReport(run, opts.reviewModel);
+    const reviewProvider = parseReviewProvider(opts.reviewProvider)
+      ?? run.config.reviewProvider
+      ?? inferReviewProvider(undefined, run.config.harness);
+    const reviewModel = opts.reviewModel
+      ?? run.config.reviewModel
+      ?? defaultReviewModel(reviewProvider);
+    const report = await buildReport(run, reviewModel, reviewProvider);
     const reportPath = path.resolve(dir, "report.md");
     fs.writeFileSync(reportPath, report);
     console.log(`report written to: ${reportPath}`);
@@ -264,6 +322,49 @@ program
     const BLUE = "\x1b[34m";
 
     const SEP = `${DIM}${"─".repeat(80)}${RESET}`;
+
+    const CODEX_TYPES = new Set([
+      "thread.started",
+      "turn.started",
+      "item.started",
+      "item.completed",
+      "turn.completed",
+      "error",
+      "turn.failed",
+    ]);
+    const firstMsg = lines.length > 0 ? JSON.parse(lines[0]!) : undefined;
+
+    if (firstMsg && CODEX_TYPES.has(firstMsg.type)) {
+      for (const line of lines) {
+        const msg = JSON.parse(line);
+
+        if (msg.type === "item.completed" && msg.item?.type === "agent_message") {
+          console.log(`\n${BOLD}${GREEN}[agent]${RESET} ${msg.item.text}`);
+        } else if (msg.type === "item.completed" && msg.item?.type === "command_execution") {
+          console.log(`\n${BOLD}${YELLOW}[command]${RESET} ${msg.item.command}`);
+          const output = String(msg.item.aggregated_output ?? "");
+          const maxLen = 500;
+          const display = output.length > maxLen
+            ? output.slice(0, maxLen) + `\n${DIM}... (${output.length} chars total)${RESET}`
+            : output;
+          console.log(`${MAGENTA}[output]${RESET} ${DIM}${display}${RESET}`);
+        } else if (msg.type === "item.completed" && msg.item?.type === "file_change") {
+          const changes = (msg.item.changes ?? [])
+            .map((c: { kind: string; path: string }) => `${c.kind} ${c.path}`)
+            .join(", ");
+          console.log(`\n${BOLD}${CYAN}[file]${RESET} ${DIM}${changes}${RESET}`);
+        } else if (msg.type === "turn.completed") {
+          const u = msg.usage ?? {};
+          console.log(SEP);
+          console.log(
+            `${BOLD}${BLUE}[turn]${RESET} input=${u.input_tokens ?? 0} output=${u.output_tokens ?? 0}`,
+          );
+        } else if (msg.type === "error" || msg.type === "turn.failed") {
+          console.log(`\n${BOLD}[error]${RESET} ${JSON.stringify(msg.message ?? msg.error)}`);
+        }
+      }
+      return;
+    }
 
     for (const line of lines) {
       const msg = JSON.parse(line);

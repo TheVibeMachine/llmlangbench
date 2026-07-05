@@ -10,6 +10,20 @@ export interface ScoreResult {
 
 const FLOAT_EPSILON = 1e-9;
 
+// Memory-capped scoring (ops hardening): a generated program can have a memory-unbounded bug
+// (unbounded recursion, catastrophic backtracking building huge intermediate state, a runaway
+// cache) that balloons a single test-case subprocess to 20+GB RSS and trips the OS OOM killer —
+// observed repeatedly against real trials in this benchmark's own history, taking down
+// unrelated processes on the host. `ulimit -v` caps the subprocess's virtual memory before each
+// test case runs; 2GB is generous headroom for any correct small-input implementation while
+// still killing a genuine runaway well before it threatens the host. Uses `;` not `&&` so a
+// `ulimit` failure (e.g. in a restricted environment) can't silently skip the actual test run.
+const MAX_TEST_MEMORY_KB = 2_000_000;
+
+function memoryCapped(command: string): string {
+  return `ulimit -v ${MAX_TEST_MEMORY_KB}; ${command}`;
+}
+
 function compareOutput(actual: string, expected: string, approx?: boolean): boolean {
   const trimmedActual = actual.trim();
   const trimmedExpected = expected.trim();
@@ -30,7 +44,7 @@ function runOneTest(
   testCase: TestCase,
 ): { pass: boolean; actual: string; error?: string } {
   try {
-    const actual = execSync(runCommand, {
+    const actual = execSync(memoryCapped(runCommand), {
       cwd: dir,
       input: testCase.input,
       stdio: ["pipe", "pipe", "pipe"],

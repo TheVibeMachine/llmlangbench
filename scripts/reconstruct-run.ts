@@ -23,6 +23,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { scoreTrialDir } from "../src/scorer.js";
 import { reviewTrialDir } from "../src/reviewer.js";
+import { defaultReviewModel, type ReviewProvider } from "../src/llm.js";
 import type { BenchmarkRun, TrialResult, LanguageConfig } from "../src/types.js";
 
 const ROOT_DIR = path.resolve(import.meta.dirname, "..");
@@ -44,14 +45,26 @@ function trialKey(r: { taskId: string; language: string; trial: number }): strin
 interface TranscriptInfo {
   status: TrialResult["status"];
   costUsd: number;
+  costEstimated: boolean;
   inputTokens: number;
+  cachedInputTokens: number;
   outputTokens: number;
+  reasoningOutputTokens: number;
   turns: number;
+  actions: number;
   durationMs: number;
 }
 
 function extractFromTranscript(transcriptPath: string): TranscriptInfo {
   const lines = fs.readFileSync(transcriptPath, "utf-8").trim().split("\n");
+
+  let codexInputTokens = 0;
+  let codexCachedInputTokens = 0;
+  let codexOutputTokens = 0;
+  let codexReasoningOutputTokens = 0;
+  let codexTurns = 0;
+  let codexActions = 0;
+  let codexStatus: TrialResult["status"] | undefined;
 
   // find the best result message: prefer the one with actual data
   // (the SDK sometimes emits a spurious error_during_execution with 0 turns after the real result)
@@ -63,12 +76,61 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
         if (!bestResult || (bestResult.num_turns === 0 && msg.num_turns > 0)) {
           bestResult = msg;
         }
+      } else if (msg.type === "turn.completed") {
+        // Codex has no final result message with an exit-status subtype like
+        // Claude Code does. For Codex transcripts, success reconstruction is
+        // therefore a best-effort inference from a completed turn; a truncated
+        // transcript that is missing this event can only reconstruct as error.
+        codexTurns += 1;
+        codexStatus ??= "success";
+        codexInputTokens += msg.usage?.input_tokens ?? 0;
+        codexCachedInputTokens += msg.usage?.cached_input_tokens ?? 0;
+        codexOutputTokens += msg.usage?.output_tokens ?? 0;
+        codexReasoningOutputTokens += msg.usage?.reasoning_output_tokens ?? 0;
+      } else if (msg.type === "turn.failed") {
+        codexStatus = "error";
+      } else if (msg.type === "harness.max_actions") {
+        codexStatus = "max_actions";
+      } else if (msg.type === "harness.timeout") {
+        codexStatus = "timeout";
+      } else if (msg.type === "item.completed") {
+        if (msg.item?.type === "command_execution") {
+          codexActions += 1;
+        } else if (msg.item?.type === "file_change") {
+          codexActions += Array.isArray(msg.item.changes) ? msg.item.changes.length : 1;
+        }
       }
     } catch {}
   }
 
+  if (!bestResult && (codexTurns > 0 || codexActions > 0 || codexStatus)) {
+    return {
+      status: codexStatus ?? "error",
+      costUsd: 0,
+      costEstimated: false,
+      inputTokens: codexInputTokens,
+      cachedInputTokens: codexCachedInputTokens,
+      outputTokens: codexOutputTokens,
+      reasoningOutputTokens: codexReasoningOutputTokens,
+      turns: codexTurns,
+      actions: codexActions,
+      durationMs: 0,
+    };
+  }
+
   if (!bestResult) {
-    return { status: "error", costUsd: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 };
+    return {
+      status: "error",
+      costUsd: 0,
+      costEstimated: false,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      turns: 0,
+      actions: 0,
+      durationMs: 0,
+    };
   }
 
   let status: TrialResult["status"];
@@ -91,9 +153,13 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
   return {
     status,
     costUsd: bestResult.total_cost_usd ?? 0,
+    costEstimated: bestResult.total_cost_usd != null,
     inputTokens,
+    cachedInputTokens: 0,
     outputTokens,
+    reasoningOutputTokens: 0,
     turns: bestResult.num_turns ?? 0,
+    actions: 0,
     durationMs: bestResult.duration_ms ?? 0,
   };
 }
@@ -122,13 +188,17 @@ async function main() {
   // load existing run.json if present (for incremental merging)
   const outPath = path.join(runDir, "run.json");
   const existing = new Map<string, TrialResult>();
+  let existingRun: BenchmarkRun | undefined;
   if (fs.existsSync(outPath)) {
-    const prev: BenchmarkRun = JSON.parse(fs.readFileSync(outPath, "utf-8"));
-    for (const r of prev.results) {
+    existingRun = JSON.parse(fs.readFileSync(outPath, "utf-8"));
+    for (const r of existingRun.results) {
       existing.set(trialKey(r), r);
     }
     console.log(`loaded ${existing.size} existing results from run.json`);
   }
+
+  const reviewProvider: ReviewProvider = existingRun?.config.reviewProvider ?? "anthropic";
+  const reviewModel = existingRun?.config.reviewModel ?? defaultReviewModel(reviewProvider);
 
   const languageDefs = loadLanguages();
   const runId = path.basename(runDir);
@@ -198,7 +268,9 @@ async function main() {
           results.push({ ...prev, durationMs: info.durationMs });
           continue;
         }
-        console.log(`  transcript: ${info.status} | ${info.turns} turns | $${info.costUsd.toFixed(4)}`);
+        const effort = info.actions > 0 ? `${info.actions} actions` : `${info.turns} turns`;
+        const costInfo = info.costEstimated ? `$${info.costUsd.toFixed(4)}` : "n/a";
+        console.log(`  transcript: ${info.status} | ${effort} | ${costInfo}`);
 
         // 2. score (or preserve existing)
         let testsPassed = prev?.testsPassed ?? 0;
@@ -226,7 +298,7 @@ async function main() {
         const hasReview = prev?.reviewScore != null;
         if (!skipReviews && !(onlyMissing && hasReview)) {
           try {
-            const review = await reviewTrialDir(trialDir, specPath, rubricPath, "claude-sonnet-4-5-20250929", scaffoldDir);
+            const review = await reviewTrialDir(trialDir, specPath, rubricPath, scaffoldDir, reviewModel, reviewProvider);
             reviewScore = review.score;
             reviewText = review.review;
             console.log(`  review: ${reviewScore}/100`);
@@ -246,9 +318,13 @@ async function main() {
           trial: trialNum,
           status: info.status,
           costUsd: info.costUsd,
+          costEstimated: info.costEstimated,
           inputTokens: info.inputTokens,
+          cachedInputTokens: info.cachedInputTokens,
           outputTokens: info.outputTokens,
+          reasoningOutputTokens: info.reasoningOutputTokens,
           turns: info.turns,
+          actions: info.actions,
           durationMs,
           testsPassed,
           testsTotal,
@@ -263,10 +339,15 @@ async function main() {
   const benchmarkRun: BenchmarkRun = {
     id: runId,
     timestamp: runId,
-    config: {
+    config: existingRun?.config ?? {
+      harness: "claude-code",
       model: "claude-sonnet-4-5-20250929",
+      reviewProvider: "anthropic",
+      reviewModel: "claude-sonnet-4-5-20250929",
       maxTurns: 60,
+      maxActions: 60,
       maxBudgetUsd: 5,
+      timeoutMs: 600_000,
       trials: 3,
       allowedTools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
     },

@@ -4,3 +4,5 @@ results/
 *.tsbuildinfo
 .claude/
 .env
+__pycache__/
+*.pyc

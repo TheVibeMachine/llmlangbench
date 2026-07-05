@@ -19,13 +19,23 @@ benchmark LLM coding performance across programming languages.
 
 ## prerequisites
 
-run `./scripts/check-prereqs.sh` to verify your system is ready.
+run `./scripts/check-prereqs.sh` to verify your system is ready. The check is
+harness-aware:
+
+```bash
+./scripts/check-prereqs.sh --harness claude-code
+./scripts/check-prereqs.sh --harness codex
+./scripts/check-prereqs.sh --harness codex --language python
+./scripts/check-prereqs.sh --harness claude-code --review-provider openai
+```
 
 **harness:**
 
 - [Node.js](https://nodejs.org/) (>= 18)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- `ANTHROPIC_API_KEY` environment variable set
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and `ANTHROPIC_API_KEY` if you want to run trials with `--harness claude-code`
+- [Codex CLI](https://github.com/openai/codex) and `OPENAI_API_KEY` if you want to run trials with `--harness codex`
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for AI code review/report generation. `--harness codex`
+  defaults reviews to OpenAI; `--harness claude-code` defaults reviews to Anthropic.
 
 **languages:**
 | language   | requires                                                           |
@@ -55,19 +65,50 @@ npx tsx src/cli.ts score results/{runId}/{task}/{lang}/trial-1 --tests tasks/{ta
 
 # regenerate the AI report for a previous run
 npx tsx src/cli.ts report results/{runId}
+
+# regenerate the AI report with OpenAI instead of Anthropic
+npx tsx src/cli.ts report results/{runId} --review-provider openai
 ```
 
 these flags can be supplied:
 
-| flag             | default                      | description                              |
-| ---------------- | ---------------------------- | ---------------------------------------- |
-| `-m, --model`    | `claude-sonnet-4-5-20250929` | model for trial agents                   |
-| `-t, --trials`   | `3`                          | number of trials per task/language combo |
-| `--max-turns`    | `60`                         | max agent turns per trial                |
-| `--max-budget`   | `5`                          | max cost in USD per trial                |
-| `--task`         | all                          | run only a specific task                 |
-| `--language`     | all                          | run only a specific language             |
-| `--review-model` | `claude-sonnet-4-5-20250929` | model for AI code review and analysis    |
+| flag             | default                                           | description                                                |
+| ---------------- | -------------------------------------------------- | ----------------------------------------------------------- |
+| `--harness`      | `claude-code`                                      | agent harness to run trials with (`claude-code`, `codex`)  |
+| `-m, --model`    | `claude-sonnet-4-5-20250929` (`gpt-5.4` for codex) | model for trial agents                                     |
+| `-t, --trials`   | `3`                                                 | number of trials per task/language combo                  |
+| `--max-turns`    | `60`                                                | max agent turns per trial (`claude-code` only)             |
+| `--max-actions`  | `60`                                                | max completed shell commands plus file changes per trial (`codex` only; `0` disables) |
+| `--max-budget`   | `5`                                                 | max cost in USD per trial (`claude-code` only)             |
+| `--timeout`      | `600`                                               | per-trial timeout, in seconds: wall-clock ceiling from trial start for `codex`; inactivity/stall ceiling (resets on each new SDK message) for `claude-code` |
+| `--codex-model-provider` | unset                                      | Codex-only `-c model_provider=<id>` override               |
+| `--task`         | all                                                 | run only a specific task                                   |
+| `--language`     | all                                                 | run only a specific language                               |
+| `--review-provider` | `openai` for `--harness codex`, otherwise `anthropic` | provider for AI code review and analysis (`openai`, `anthropic`) |
+| `--review-model` | provider-specific                                  | model for AI code review and analysis (`gpt-5.4` for OpenAI, `claude-sonnet-4-5-20250929` for Anthropic) |
+
+**note on Codex cost:** Codex's `--json` output reports token usage but no billed USD
+cost, so `costUsd` for the `codex` harness is estimated from a static per-model pricing
+table (`src/pricing.ts`) multiplied by token counts. When a model has cached-input
+pricing in the table, cached input tokens are priced separately; otherwise all
+input tokens are priced at the standard input rate. If the model is not in the
+pricing table, reports show `n/a` instead of treating the run as free. This is
+still an estimate, not a billed figure.
+
+When you want benchmark traffic to go through a custom Codex provider without changing your
+interactive default, use `--codex-model-provider custom-provider`. This makes the harness spawn:
+
+```bash
+codex exec ... -c model_provider=custom-provider
+```
+
+That override applies only to the benchmark child process.
+
+**note on Codex actions:** Codex's non-interactive JSON stream usually reports a
+single top-level turn for the whole `codex exec` session, so turns are not comparable
+to Claude Code turns. For Codex runs, llmlangbench records `actions` instead: one
+completed shell command execution, or one individual file add/update/delete. Reports
+show `Avg Actions` for Codex and `Avg Turns` for Claude.
 
 ## scoring
 

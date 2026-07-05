@@ -1,8 +1,9 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getHarness } from "./harness/index.js";
+import type { HarnessRunResult } from "./harness/types.js";
+import type { ReviewProvider } from "./llm.js";
 import { reviewTrialDir } from "./reviewer.js";
 import { scoreTrialDir } from "./scorer.js";
 import type { LanguageConfig, RunConfig, TrialResult } from "./types.js";
@@ -31,10 +32,12 @@ export async function runTrial(
   trial: number,
   rubricPath: string,
   reviewModel: string,
+  reviewProvider: ReviewProvider,
 ): Promise<TrialResult> {
+  const startedAt = Date.now();
   fs.mkdirSync(trialDir, { recursive: true });
 
-  let resultMessage: SDKResultMessage | undefined;
+  let harnessResult: HarnessRunResult | undefined;
 
   try {
     // copy scaffold into trial dir
@@ -86,85 +89,40 @@ export async function runTrial(
     const transcriptPath = path.join(trialDir, "transcript.jsonl");
     const transcriptStream = fs.createWriteStream(transcriptPath);
 
-    for await (const message of query({
+    const harness = getHarness(runConfig.harness);
+    harnessResult = await harness.run({
       prompt,
-      options: {
-        model: runConfig.model,
-        cwd: trialDir,
-        allowedTools: runConfig.allowedTools,
-        maxTurns: runConfig.maxTurns,
-        maxBudgetUsd: runConfig.maxBudgetUsd,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        systemPrompt: {
-          type: "preset",
-          preset: "claude_code",
-          append:
-            "Use TDD: write tests first, then implement. Do not modify the runner (run.* file). Be efficient.",
-        },
-      },
-    })) {
-      transcriptStream.write(JSON.stringify(message) + "\n");
-      if (message.type === "result") {
-        if (!resultMessage || (resultMessage.num_turns === 0 && message.num_turns > 0)) {
-          resultMessage = message;
-        }
-      }
-    }
+      trialDir,
+      model: runConfig.model,
+      codexModelProvider: runConfig.codexModelProvider,
+      maxTurns: runConfig.maxTurns,
+      maxActions: runConfig.maxActions,
+      maxBudgetUsd: runConfig.maxBudgetUsd,
+      timeoutMs: runConfig.timeoutMs,
+      allowedTools: runConfig.allowedTools,
+      transcriptStream,
+    });
 
     transcriptStream.end();
   } catch (err: unknown) {
-    // SDK threw after emitting messages — if we captured a good result, continue with it
-    if (!resultMessage) {
-      return {
-        taskId,
-        language: language.id,
-        trial,
-        status: "error",
-        costUsd: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        turns: 0,
-        durationMs: 0,
-        testsPassed: 0,
-        testsTotal: 0,
-        testOutput: `SDK error: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  }
-
-  if (!resultMessage) {
     return {
       taskId,
       language: language.id,
       trial,
       status: "error",
       costUsd: 0,
+      costEstimated: false,
       inputTokens: 0,
+      cachedInputTokens: 0,
       outputTokens: 0,
+      reasoningOutputTokens: 0,
       turns: 0,
-      durationMs: 0,
+      actions: 0,
+      durationMs: Date.now() - startedAt,
       testsPassed: 0,
       testsTotal: 0,
-      testOutput: "no result message received from SDK",
+      testOutput: `harness error: ${err instanceof Error ? err.message : String(err)}`,
     };
-  }
-
-  // map SDK subtype to our status
-  let status: TrialResult["status"];
-  switch (resultMessage.subtype) {
-    case "success":
-      status = "success";
-      break;
-    case "error_max_turns":
-      status = "max_turns";
-      break;
-    case "error_max_budget_usd":
-      status = "max_budget";
-      break;
-    default:
-      status = "error";
-      break;
   }
 
   // score the result
@@ -175,31 +133,37 @@ export async function runTrial(
   let reviewText: string | undefined;
 
   try {
-    const review = await reviewTrialDir(trialDir, specPath, rubricPath, reviewModel, scaffoldDir);
+    const review = await reviewTrialDir(
+      trialDir,
+      specPath,
+      rubricPath,
+      scaffoldDir,
+      reviewModel,
+      reviewProvider,
+    );
     reviewScore = review.score;
     reviewText = review.review;
   } catch (err: unknown) {
     reviewText = `review failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  // sum cumulative tokens across all models used in the session
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const mu of Object.values(resultMessage.modelUsage)) {
-    inputTokens += mu.inputTokens;
-    outputTokens += mu.outputTokens;
-  }
+  // harness.run() always resolves (never throws), so this is always set here
+  const h = harnessResult!;
 
   return {
     taskId,
     language: language.id,
     trial,
-    status,
-    costUsd: resultMessage.total_cost_usd,
-    inputTokens,
-    outputTokens,
-    turns: resultMessage.num_turns,
-    durationMs: resultMessage.duration_ms,
+    status: h.status,
+    costUsd: h.costUsd,
+    costEstimated: h.costEstimated,
+    inputTokens: h.inputTokens,
+    cachedInputTokens: h.cachedInputTokens,
+    outputTokens: h.outputTokens,
+    reasoningOutputTokens: h.reasoningOutputTokens,
+    turns: h.turns,
+    actions: h.actions,
+    durationMs: h.durationMs,
     testsPassed: scoreResult.passed,
     testsTotal: scoreResult.total,
     testOutput: scoreResult.output,

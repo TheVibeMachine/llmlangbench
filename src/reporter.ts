@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { generateText, type ReviewProvider } from "./llm.js";
 import type { BenchmarkRun, TrialResult } from "./types.js";
 
 interface LangSummary {
@@ -6,10 +6,14 @@ interface LangSummary {
   trials: number;
   avgPassRate: number;
   avgCostUsd: number;
+  costEstimated: boolean;
   avgTurns: number;
+  avgActions: number;
   avgDurationMs: number;
   avgInputTokens: number;
+  avgCachedInputTokens: number;
   avgOutputTokens: number;
+  avgReasoningOutputTokens: number;
   avgReviewScore?: number;
 }
 
@@ -19,6 +23,7 @@ interface TaskSummary {
   trials: number;
   passRate: number;
   avgCostUsd: number;
+  costEstimated: boolean;
   avgReviewScore?: number;
 }
 
@@ -55,6 +60,14 @@ function avgReviewScore(results: TrialResult[]): number | undefined {
   return scores.length > 0 ? avg(scores) : undefined;
 }
 
+function costsEstimated(results: TrialResult[]): boolean {
+  return results.every((r) => r.costEstimated !== false);
+}
+
+function formatCost(costUsd: number, estimated: boolean): string {
+  return estimated ? `$${costUsd.toFixed(4)}` : "n/a";
+}
+
 function buildLanguageSummaries(results: TrialResult[]): LangSummary[] {
   const byLang = groupBy(results, (r) => r.language);
   const summaries: LangSummary[] = [];
@@ -65,10 +78,14 @@ function buildLanguageSummaries(results: TrialResult[]): LangSummary[] {
       trials: trials.length,
       avgPassRate: passRate(trials),
       avgCostUsd: avg(trials.map((t) => t.costUsd)),
+      costEstimated: costsEstimated(trials),
       avgTurns: avg(trials.map((t) => t.turns)),
+      avgActions: avg(trials.map((t) => t.actions ?? 0)),
       avgDurationMs: avg(trials.map((t) => t.durationMs)),
       avgInputTokens: avg(trials.map((t) => t.inputTokens)),
+      avgCachedInputTokens: avg(trials.map((t) => t.cachedInputTokens ?? 0)),
       avgOutputTokens: avg(trials.map((t) => t.outputTokens)),
+      avgReasoningOutputTokens: avg(trials.map((t) => t.reasoningOutputTokens ?? 0)),
       avgReviewScore: avgReviewScore(trials),
     });
   }
@@ -88,6 +105,7 @@ function buildTaskSummaries(results: TrialResult[]): TaskSummary[] {
       trials: trials.length,
       passRate: passRate(trials),
       avgCostUsd: avg(trials.map((t) => t.costUsd)),
+      costEstimated: costsEstimated(trials),
       avgReviewScore: avgReviewScore(trials),
     });
   }
@@ -116,13 +134,27 @@ function formatDuration(ms: number): string {
  */
 export function generateReport(run: BenchmarkRun): string {
   const lines: string[] = [];
+  const isCodex = run.config.harness === "codex";
 
   lines.push(`# Benchmark Run: ${run.id}`);
   lines.push("");
   lines.push(`**Model:** ${run.config.model}`);
-  lines.push(
-    `**Config:** ${run.config.trials} trials, max ${run.config.maxTurns} turns, $${run.config.maxBudgetUsd} budget`,
-  );
+  if (run.config.reviewProvider && run.config.reviewModel) {
+    lines.push(`**Review:** ${run.config.reviewProvider} / ${run.config.reviewModel}`);
+  }
+  if (isCodex) {
+    const maxActions = run.config.maxActions;
+    const actionBudget = maxActions == null
+      ? "action cap not recorded"
+      : maxActions === 0
+        ? "no action cap"
+        : `max ${maxActions} actions`;
+    lines.push(`**Config:** ${run.config.trials} trials, ${actionBudget}, ${(run.config.timeoutMs / 1000).toFixed(0)}s timeout`);
+  } else {
+    lines.push(
+      `**Config:** ${run.config.trials} trials, max ${run.config.maxTurns} turns, $${run.config.maxBudgetUsd} budget`,
+    );
+  }
   lines.push(`**Total results:** ${run.results.length}`);
 
   // language summary table
@@ -131,16 +163,18 @@ export function generateReport(run: BenchmarkRun): string {
   lines.push("");
   lines.push("## Per-Language Summary");
   lines.push("");
+  const effortHeader = isCodex ? "Avg Actions" : "Avg Turns";
   lines.push(
-    `| ${pad("Language", 14)} | ${rpad("Trials", 7)} | ${rpad("Pass%", 7)} | ${rpad("Avg Cost", 10)} | ${rpad("Avg Turns", 10)} | ${rpad("Avg Time", 10)} | ${rpad("Review", 8)} |`,
+    `| ${pad("Language", 14)} | ${rpad("Trials", 7)} | ${rpad("Pass%", 7)} | ${rpad("Avg Cost", 10)} | ${rpad(effortHeader, 11)} | ${rpad("Avg Time", 10)} | ${rpad("Review", 8)} |`,
   );
   lines.push(
-    `| ${"-".repeat(14)} | ${"-".repeat(7)}: | ${"-".repeat(7)}: | ${"-".repeat(10)}: | ${"-".repeat(10)}: | ${"-".repeat(10)}: | ${"-".repeat(8)}: |`,
+    `| ${"-".repeat(14)} | ${"-".repeat(7)}: | ${"-".repeat(7)}: | ${"-".repeat(10)}: | ${"-".repeat(11)}: | ${"-".repeat(10)}: | ${"-".repeat(8)}: |`,
   );
 
   for (const s of langSummaries) {
+    const effort = isCodex ? s.avgActions : s.avgTurns;
     lines.push(
-      `| ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.avgPassRate * 100).toFixed(1) + "%", 7)} | ${rpad("$" + s.avgCostUsd.toFixed(4), 10)} | ${rpad(s.avgTurns.toFixed(1), 10)} | ${rpad(formatDuration(s.avgDurationMs), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
+      `| ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.avgPassRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costEstimated), 10)} | ${rpad(effort.toFixed(1), 11)} | ${rpad(formatDuration(s.avgDurationMs), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
     );
   }
 
@@ -159,7 +193,7 @@ export function generateReport(run: BenchmarkRun): string {
 
   for (const s of taskSummaries) {
     lines.push(
-      `| ${pad(s.taskId, 20)} | ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.passRate * 100).toFixed(1) + "%", 7)} | ${rpad("$" + s.avgCostUsd.toFixed(4), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
+      `| ${pad(s.taskId, 20)} | ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.passRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costEstimated), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
     );
   }
 
@@ -180,15 +214,21 @@ function buildLangDataSections(run: BenchmarkRun): {
   for (const [language, trials] of byLang) {
     const pr = passRate(trials);
     const avgCost = avg(trials.map((t) => t.costUsd));
+    const costEstimated = costsEstimated(trials);
     const avgTurns = avg(trials.map((t) => t.turns));
+    const avgActions = avg(trials.map((t) => t.actions ?? 0));
     const avgDuration = avg(trials.map((t) => t.durationMs));
     const reviewScore = avgReviewScore(trials);
 
     let section = `### ${language}\n`;
     section += `- Trials: ${trials.length}\n`;
     section += `- Pass rate: ${(pr * 100).toFixed(1)}%\n`;
-    section += `- Avg cost: $${avgCost.toFixed(4)}\n`;
-    section += `- Avg turns: ${avgTurns.toFixed(1)}\n`;
+    section += `- Avg cost: ${formatCost(avgCost, costEstimated)}\n`;
+    if (run.config.harness === "codex") {
+      section += `- Avg actions: ${avgActions.toFixed(1)}\n`;
+    } else {
+      section += `- Avg turns: ${avgTurns.toFixed(1)}\n`;
+    }
     section += `- Avg time: ${formatDuration(avgDuration)}\n`;
     if (reviewScore != null) {
       section += `- Avg review score: ${reviewScore.toFixed(0)}/100\n`;
@@ -219,8 +259,8 @@ interface AnalysisResult {
 export async function generateAnalysis(
   run: BenchmarkRun,
   model: string,
+  provider: ReviewProvider,
 ): Promise<AnalysisResult> {
-  const client = new Anthropic();
   const { sections, languages } = buildLangDataSections(run);
 
   const prompt = `You are analyzing benchmark results for an LLM coding benchmark that tests how well ${run.config.model} writes code in different programming languages.
@@ -241,15 +281,11 @@ Respond with a JSON object containing:
 
 Respond ONLY with the JSON object, no other text.`;
 
-  const response = await client.messages.create({
+  const raw = await generateText(prompt, {
+    provider,
     model,
-    max_tokens: 4096,
-    temperature: 0,
-    messages: [{ role: "user", content: prompt }],
+    maxTokens: 4096,
   });
-
-  const textBlock = response.content.find((b) => b.type === "text");
-  const raw = textBlock?.text ?? "";
 
   const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [null, raw];
   const jsonStr = (jsonMatch[1] ?? raw).trim();
@@ -272,11 +308,12 @@ Respond ONLY with the JSON object, no other text.`;
 export async function buildReport(
   run: BenchmarkRun,
   reviewModel: string,
+  reviewProvider: ReviewProvider,
 ): Promise<string> {
   let report = generateReport(run);
 
   console.log("generating analysis...");
-  const analysis = await generateAnalysis(run, reviewModel);
+  const analysis = await generateAnalysis(run, reviewModel, reviewProvider);
 
   report += "\n## Language Analysis\n";
   for (const [language, narrative] of analysis.languages) {

@@ -53,19 +53,37 @@ export interface LanguageConfig {
  * user-specified params for the benchmark.
  */
 export interface RunConfig {
-  /* which Claude will we run on? */
+  /* which agent harness runs the trial: the Claude Agent SDK, or Codex */
+  harness: "claude-code" | "codex";
+
+  /* which model will we run on? */
   model: string;
 
-  /* turn limit- don't want to let Claude take unbounded time */
+  /* optional codex-only provider override, e.g. -c model_provider=custom-provider */
+  codexModelProvider?: string;
+
+  /* provider used for AI code review and report analysis */
+  reviewProvider: "anthropic" | "openai";
+
+  /* model used for AI code review and report analysis */
+  reviewModel: string;
+
+  /* turn limit- don't want to let the agent take unbounded time (claude only) */
   maxTurns: number;
 
-  /* cost limit- so you don't burn a hole in your wallet */
+  /* action limit for codex: completed shell commands plus file changes */
+  maxActions: number;
+
+  /* cost limit- so you don't burn a hole in your wallet (claude only) */
   maxBudgetUsd: number;
+
+  /* wall-clock timeout per trial, in ms (codex only) */
+  timeoutMs: number;
 
   /* how many times should each spec be run against each language? */
   trials: number;
 
-  /* limit the set of tools the benchmark runs can access */
+  /* limit the set of tools the benchmark runs can access (claude only) */
   allowedTools: string[];
 }
 
@@ -76,11 +94,15 @@ export interface TrialResult {
   taskId: string;
   language: string;
   trial: number;
-  status: "success" | "error" | "max_turns" | "max_budget";
+  status: "success" | "error" | "timeout" | "max_turns" | "max_actions" | "max_budget";
   costUsd: number;
+  costEstimated: boolean;
   inputTokens: number;
+  cachedInputTokens: number;
   outputTokens: number;
+  reasoningOutputTokens: number;
   turns: number;
+  actions: number;
   durationMs: number;
   testsPassed: number;
   testsTotal: number;
