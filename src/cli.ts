@@ -132,6 +132,10 @@ program
     "provider for AI code review and analysis (anthropic, openai; defaults to openai for codex and anthropic otherwise)",
   )
   .action(async (opts) => {
+    if (opts.harness !== "claude-code" && opts.harness !== "codex") {
+      console.error(`unsupported --harness "${opts.harness}" (expected "claude-code" or "codex")`);
+      process.exit(1);
+    }
     const harness: RunConfig["harness"] = opts.harness;
     const model = opts.model ?? (harness === "codex" ? "gpt-5.4" : "claude-sonnet-4-5-20250929");
     const reviewProvider = inferReviewProvider(opts.reviewProvider, harness);

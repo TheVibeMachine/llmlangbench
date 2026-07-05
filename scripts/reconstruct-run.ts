@@ -65,6 +65,20 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
   let codexTurns = 0;
   let codexActions = 0;
   let codexStatus: TrialResult["status"] | undefined;
+  // mirrors the precedence enforced live in src/harness/codex.ts, since
+  // termination is async and a trailing turn.failed can land in the
+  // transcript after a harness.timeout/harness.max_actions marker
+  const codexStatusRank: Record<string, number> = {
+    success: 0,
+    error: 1,
+    timeout: 2,
+    max_actions: 3,
+  };
+  const setCodexStatus = (next: TrialResult["status"]) => {
+    if (!codexStatus || codexStatusRank[next] >= codexStatusRank[codexStatus]) {
+      codexStatus = next;
+    }
+  };
 
   // find the best result message: prefer the one with actual data
   // (the SDK sometimes emits a spurious error_during_execution with 0 turns after the real result)
@@ -82,17 +96,17 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
         // therefore a best-effort inference from a completed turn; a truncated
         // transcript that is missing this event can only reconstruct as error.
         codexTurns += 1;
-        codexStatus ??= "success";
+        setCodexStatus("success");
         codexInputTokens += msg.usage?.input_tokens ?? 0;
         codexCachedInputTokens += msg.usage?.cached_input_tokens ?? 0;
         codexOutputTokens += msg.usage?.output_tokens ?? 0;
         codexReasoningOutputTokens += msg.usage?.reasoning_output_tokens ?? 0;
       } else if (msg.type === "turn.failed") {
-        codexStatus = "error";
+        setCodexStatus("error");
       } else if (msg.type === "harness.max_actions") {
-        codexStatus = "max_actions";
+        setCodexStatus("max_actions");
       } else if (msg.type === "harness.timeout") {
-        codexStatus = "timeout";
+        setCodexStatus("timeout");
       } else if (msg.type === "item.completed") {
         if (msg.item?.type === "command_execution") {
           codexActions += 1;
