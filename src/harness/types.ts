@@ -8,7 +8,7 @@ export interface HarnessRunOptions {
   maxTurns: number; // used by claude only
   maxActions: number; // used by codex only
   maxBudgetUsd: number; // used by claude only
-  timeoutMs: number; // used by codex only (wall-clock)
+  timeoutMs: number; // wall-clock ceiling for codex; inactivity/stall ceiling for claude
   allowedTools: string[]; // used by claude only
   transcriptStream: NodeJS.WritableStream;
 }
@@ -16,7 +16,7 @@ export interface HarnessRunOptions {
 export interface HarnessRunResult {
   status: TrialResult["status"];
   costUsd: number;
-  costEstimated: boolean;
+  costAvailable: boolean;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

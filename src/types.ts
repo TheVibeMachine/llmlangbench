@@ -77,7 +77,7 @@ export interface RunConfig {
   /* cost limit- so you don't burn a hole in your wallet (claude only) */
   maxBudgetUsd: number;
 
-  /* wall-clock timeout per trial, in ms (codex only) */
+  /* per-trial timeout in ms: wall-clock ceiling for codex, inactivity/stall ceiling for claude-code */
   timeoutMs: number;
 
   /* how many times should each spec be run against each language? */
@@ -96,7 +96,7 @@ export interface TrialResult {
   trial: number;
   status: "success" | "error" | "timeout" | "max_turns" | "max_actions" | "max_budget";
   costUsd: number;
-  costEstimated: boolean;
+  costAvailable: boolean;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

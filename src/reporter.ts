@@ -6,7 +6,7 @@ interface LangSummary {
   trials: number;
   avgPassRate: number;
   avgCostUsd: number;
-  costEstimated: boolean;
+  costAvailable: boolean;
   avgTurns: number;
   avgActions: number;
   avgDurationMs: number;
@@ -23,7 +23,7 @@ interface TaskSummary {
   trials: number;
   passRate: number;
   avgCostUsd: number;
-  costEstimated: boolean;
+  costAvailable: boolean;
   avgReviewScore?: number;
 }
 
@@ -60,12 +60,12 @@ function avgReviewScore(results: TrialResult[]): number | undefined {
   return scores.length > 0 ? avg(scores) : undefined;
 }
 
-function costsEstimated(results: TrialResult[]): boolean {
-  return results.every((r) => r.costEstimated !== false);
+function costsAvailable(results: TrialResult[]): boolean {
+  return results.every((r) => r.costAvailable !== false);
 }
 
-function formatCost(costUsd: number, estimated: boolean): string {
-  return estimated ? `$${costUsd.toFixed(4)}` : "n/a";
+function formatCost(costUsd: number, available: boolean): string {
+  return available ? `$${costUsd.toFixed(4)}` : "n/a";
 }
 
 function buildLanguageSummaries(results: TrialResult[]): LangSummary[] {
@@ -78,7 +78,7 @@ function buildLanguageSummaries(results: TrialResult[]): LangSummary[] {
       trials: trials.length,
       avgPassRate: passRate(trials),
       avgCostUsd: avg(trials.map((t) => t.costUsd)),
-      costEstimated: costsEstimated(trials),
+      costAvailable: costsAvailable(trials),
       avgTurns: avg(trials.map((t) => t.turns)),
       avgActions: avg(trials.map((t) => t.actions ?? 0)),
       avgDurationMs: avg(trials.map((t) => t.durationMs)),
@@ -105,7 +105,7 @@ function buildTaskSummaries(results: TrialResult[]): TaskSummary[] {
       trials: trials.length,
       passRate: passRate(trials),
       avgCostUsd: avg(trials.map((t) => t.costUsd)),
-      costEstimated: costsEstimated(trials),
+      costAvailable: costsAvailable(trials),
       avgReviewScore: avgReviewScore(trials),
     });
   }
@@ -174,7 +174,7 @@ export function generateReport(run: BenchmarkRun): string {
   for (const s of langSummaries) {
     const effort = isCodex ? s.avgActions : s.avgTurns;
     lines.push(
-      `| ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.avgPassRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costEstimated), 10)} | ${rpad(effort.toFixed(1), 11)} | ${rpad(formatDuration(s.avgDurationMs), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
+      `| ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.avgPassRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costAvailable), 10)} | ${rpad(effort.toFixed(1), 11)} | ${rpad(formatDuration(s.avgDurationMs), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
     );
   }
 
@@ -193,7 +193,7 @@ export function generateReport(run: BenchmarkRun): string {
 
   for (const s of taskSummaries) {
     lines.push(
-      `| ${pad(s.taskId, 20)} | ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.passRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costEstimated), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
+      `| ${pad(s.taskId, 20)} | ${pad(s.language, 14)} | ${rpad(String(s.trials), 7)} | ${rpad((s.passRate * 100).toFixed(1) + "%", 7)} | ${rpad(formatCost(s.avgCostUsd, s.costAvailable), 10)} | ${rpad(s.avgReviewScore != null ? s.avgReviewScore.toFixed(0) : "-", 8)} |`,
     );
   }
 
@@ -214,7 +214,7 @@ function buildLangDataSections(run: BenchmarkRun): {
   for (const [language, trials] of byLang) {
     const pr = passRate(trials);
     const avgCost = avg(trials.map((t) => t.costUsd));
-    const costEstimated = costsEstimated(trials);
+    const costAvailable = costsAvailable(trials);
     const avgTurns = avg(trials.map((t) => t.turns));
     const avgActions = avg(trials.map((t) => t.actions ?? 0));
     const avgDuration = avg(trials.map((t) => t.durationMs));
@@ -223,7 +223,7 @@ function buildLangDataSections(run: BenchmarkRun): {
     let section = `### ${language}\n`;
     section += `- Trials: ${trials.length}\n`;
     section += `- Pass rate: ${(pr * 100).toFixed(1)}%\n`;
-    section += `- Avg cost: ${formatCost(avgCost, costEstimated)}\n`;
+    section += `- Avg cost: ${formatCost(avgCost, costAvailable)}\n`;
     if (run.config.harness === "codex") {
       section += `- Avg actions: ${avgActions.toFixed(1)}\n`;
     } else {

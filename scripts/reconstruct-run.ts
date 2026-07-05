@@ -45,7 +45,7 @@ function trialKey(r: { taskId: string; language: string; trial: number }): strin
 interface TranscriptInfo {
   status: TrialResult["status"];
   costUsd: number;
-  costEstimated: boolean;
+  costAvailable: boolean;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -121,7 +121,7 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
     return {
       status: codexStatus ?? "error",
       costUsd: 0,
-      costEstimated: false,
+      costAvailable: false,
       inputTokens: codexInputTokens,
       cachedInputTokens: codexCachedInputTokens,
       outputTokens: codexOutputTokens,
@@ -136,7 +136,7 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
     return {
       status: "error",
       costUsd: 0,
-      costEstimated: false,
+      costAvailable: false,
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 0,
@@ -167,7 +167,7 @@ function extractFromTranscript(transcriptPath: string): TranscriptInfo {
   return {
     status,
     costUsd: bestResult.total_cost_usd ?? 0,
-    costEstimated: bestResult.total_cost_usd != null,
+    costAvailable: bestResult.total_cost_usd != null,
     inputTokens,
     cachedInputTokens: 0,
     outputTokens,
@@ -283,7 +283,7 @@ async function main() {
           continue;
         }
         const effort = info.actions > 0 ? `${info.actions} actions` : `${info.turns} turns`;
-        const costInfo = info.costEstimated ? `$${info.costUsd.toFixed(4)}` : "n/a";
+        const costInfo = info.costAvailable ? `$${info.costUsd.toFixed(4)}` : "n/a";
         console.log(`  transcript: ${info.status} | ${effort} | ${costInfo}`);
 
         // 2. score (or preserve existing)
@@ -332,7 +332,7 @@ async function main() {
           trial: trialNum,
           status: info.status,
           costUsd: info.costUsd,
-          costEstimated: info.costEstimated,
+          costAvailable: info.costAvailable,
           inputTokens: info.inputTokens,
           cachedInputTokens: info.cachedInputTokens,
           outputTokens: info.outputTokens,

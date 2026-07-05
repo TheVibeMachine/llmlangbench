@@ -66,7 +66,7 @@ async function run(opts: HarnessRunOptions): Promise<HarnessRunResult> {
       return {
         status: stalled ? "timeout" : "error",
         costUsd: 0,
-        costEstimated: false,
+        costAvailable: false,
         inputTokens: 0,
         cachedInputTokens: 0,
         outputTokens: 0,
@@ -84,7 +84,7 @@ async function run(opts: HarnessRunOptions): Promise<HarnessRunResult> {
     return {
       status: stalled ? "timeout" : "error",
       costUsd: 0,
-      costEstimated: false,
+      costAvailable: false,
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 0,
@@ -123,7 +123,7 @@ async function run(opts: HarnessRunOptions): Promise<HarnessRunResult> {
   return {
     status,
     costUsd: resultMessage.total_cost_usd,
-    costEstimated: true,
+    costAvailable: true,
     inputTokens,
     cachedInputTokens: 0,
     outputTokens,

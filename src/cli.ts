@@ -35,8 +35,8 @@ function inferReviewProvider(
   return parsed ?? (harness === "codex" ? "openai" : "anthropic");
 }
 
-function formatCost(costUsd: number, estimated: boolean): string {
-  return estimated ? `$${costUsd.toFixed(4)}` : "n/a";
+function formatCost(costUsd: number, available: boolean): string {
+  return available ? `$${costUsd.toFixed(4)}` : "n/a";
 }
 
 async function discoverTasks(): Promise<TaskConfig[]> {
@@ -229,7 +229,7 @@ program
             ? `${result.actions} actions`
             : `${result.turns} turns`;
           console.log(
-            `  -> ${result.testsPassed}/${result.testsTotal} tests passed | ${formatCost(result.costUsd, result.costEstimated)} | ${effortInfo} | ${(result.durationMs / 1000).toFixed(1)}s${reviewInfo}`,
+            `  -> ${result.testsPassed}/${result.testsTotal} tests passed | ${formatCost(result.costUsd, result.costAvailable)} | ${effortInfo} | ${(result.durationMs / 1000).toFixed(1)}s${reviewInfo}`,
           );
         }
       }

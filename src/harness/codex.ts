@@ -179,7 +179,7 @@ async function run(opts: HarnessRunOptions): Promise<HarnessRunResult> {
     return {
       status,
       costUsd: cost.costUsd,
-      costEstimated: cost.estimated,
+      costAvailable: cost.estimated,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -195,7 +195,7 @@ async function run(opts: HarnessRunOptions): Promise<HarnessRunResult> {
     return {
       status: "error",
       costUsd: 0,
-      costEstimated: false,
+      costAvailable: false,
       inputTokens,
       cachedInputTokens,
       outputTokens,
